@@ -797,7 +797,7 @@ def cmd_status(a):
     last = (root / ".paper" / "code_head").read_text().strip() if (root / ".paper" / "code_head").exists() else None
     print(f"\n--- library: {cnt}; drafts awaiting human edit: {len(drafts)} {drafts[:8]}")
     print(f"--- code repo {code.name} @ {head}; registry: {len(reg)} experiments "
-          f"({', '.join(f'{k}={v.get('status')}' for k, v in list(reg.items())[:20])})")
+          f"({', '.join(str(k) + '=' + str(v.get('status')) for k, v in list(reg.items())[:20])})")
     if last and last != head and head != "?":
         diff = subprocess.run(["git", "-C", str(code), "diff", "--name-only", last, "HEAD"], capture_output=True, text=True).stdout.split()
         touched = [p for p in diff if p.startswith(("results/", "experiments/", "configs/"))]
