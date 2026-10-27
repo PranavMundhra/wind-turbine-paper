@@ -12,6 +12,7 @@ conversation never has to hold whole PDFs, notebooks or sections:
   find <query> [-n N]         Semantic Scholar search (only after the user agrees)
   add-doi <doi> [--key K]     verified metadata from Crossref -> refs/inbox/<key>.md
   add-arxiv <id> [--key K]    verified metadata from arXiv     -> refs/inbox/<key>.md
+  add-pdf <pdf...>            read DOI/arXiv id from each PDF, verify, make inbox card, ingest text
   ingest <pdf> --key K        pdf -> refs/text/<key>.txt with page markers
   cards [--verify]            list cards; --verify string-matches every quote
   approve <key> / reject <key> --reason R   (run only on the user's say-so)
@@ -44,6 +45,17 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit("paper.py needs PyYAML: pip install pyyaml")
 
+
+# Windows defaults to cp1252; paper text and cards are UTF-8.
+_rt, _wt = Path.read_text, Path.write_text
+Path.read_text = lambda self, encoding="utf-8", errors=None: _rt(self, encoding=encoding, errors=errors)
+Path.write_text = lambda self, data, encoding="utf-8", errors=None, newline=None: _wt(self, data, encoding=encoding, errors=errors, newline=newline)
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
+
 HERE = Path(__file__).resolve().parent
 UA = "paper.py (grounded-paper skill; mailto:unknown)"
 
@@ -66,6 +78,7 @@ def load_cfg(root: Path) -> dict:
     cfg.setdefault("run_files", ["results.json", "results_display.json", "evidence.json", "manifest.json"])
     cfg.setdefault("sections_dir", "sections")
     cfg.setdefault("noise_experiment", None)
+    cfg.setdefault("single_seed", False)
     cfg.setdefault("status_rules", {})
     return cfg
 
@@ -75,10 +88,17 @@ FM = re.compile(r"^---\n(.*?)\n---\n?(.*)$", re.S)
 
 
 def read_card(path: Path) -> dict:
-    m = FM.match(path.read_text())
+    raw = path.read_bytes().decode("utf-8-sig", errors="replace").replace("\r\n", "\n")  # BOM + CRLF safe
+    m = FM.match(raw)
     if not m:
-        raise ValueError(f"{path}: missing YAML front matter")
-    d = yaml.safe_load(m.group(1)) or {}
+        raise ValueError("no YAML front matter: the file must start with a line '---' and have a closing '---'")
+    try:
+        d = yaml.safe_load(m.group(1)) or {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"YAML error: {str(e).splitlines()[0]} (line {getattr(getattr(e, 'problem_mark', None), 'line', -1) + 2}); "
+                         "tip: wrap any text containing a colon or quote in double quotes") from None
+    if not isinstance(d, dict):
+        raise ValueError("front matter is not a key: value block")
     d["_notes"] = m.group(2)
     d["_path"] = path
     return d
@@ -99,7 +119,7 @@ def all_cards(root: Path) -> dict[str, dict]:
             try:
                 c = read_card(p)
             except Exception as e:  # noqa: BLE001
-                print(f"WARN bad card {p}: {e}", file=sys.stderr)
+                print(f"BAD CARD {p.name}: {e}", file=sys.stderr)
                 continue
             out[c.get("key", p.stem)] = c
     return out
@@ -281,6 +301,8 @@ HEDGE = {"planned": re.compile(r"\b(will|plan\w*|future|intend\w*|propose\w*)\b"
          "partial": re.compile(r"\b(preliminary|initial|partial|early|so far|ongoing)\b", re.I),
          "done-unverified": re.compile(r"\b(reported|unverified|approximately|about|around|suggest\w*|indicat\w*)\b", re.I)}
 # Filler that marks text as machine-written. A trailing * means "any word starting with this stem".
+SINGLE_RE = re.compile(r"single[- ]seed|one seed|single run|one run|seed\s*\d+", re.I)
+STRONG = re.compile(r"\b(clearly|significant\w*|substantial\w*|robust\w*|consistent\w*|conclusive\w*|demonstrat\w*|prov(?:e|es|ed|en))\b", re.I)
 SLOP = ["delve*", "crucial", "pivotal", "notably", "it is important to note", "it is worth noting", "in the realm of",
         "plays a vital role", "plays a key role", "plays a crucial role", "a testament to", "navigat*", "landscape",
         "furthermore,", "moreover,", "in conclusion,", "underscore*", "seamless*", "leverag*", "robust", "novel",
@@ -444,6 +466,11 @@ def cmd_check(a):
                     emit("WARN", f, ln, st.upper(), f"{exp} is {st}; {rule_for(cfg, st)}")
             if exps and not noise_done and COMPARE.search(text) and (len(set(exps)) >= 2 or "than" in text):
                 emit("WARN", f, ln, "NOISE", f"comparison before {noise} (noise/seed robustness) is done; may be within run-to-run noise")
+            if cfg.get("single_seed") and exps and COMPARE.search(text):
+                if not SINGLE_RE.search(text):
+                    emit("WARN", f, ln, "SINGLE-SEED", "comparison must say it comes from one seed (e.g. 'in our single-seed run')")
+                if STRONG.search(text):
+                    emit("WARN", f, ln, "OVERCLAIM", f"'{STRONG.search(text).group(0)}' is too strong for a single-seed comparison")
             # --- numbers
             body = STRIP_CMDS.sub("", text)
             body = re.sub(r"\\(?:section|subsection|subsubsection|paragraph|caption)\*?\{[^}]*\}", "", body)
@@ -470,6 +497,11 @@ def cmd_check(a):
                 for p, rx in SLOP_RE:
                     if rx.search(body):
                         emit("WARN", f, ln, "SLOP", f"'{p.rstrip('*')}' in a Claude draft")
+    if cfg.get("single_seed") and not a.files:
+        alltxt = " ".join(p.read_text() for p in tex_files(root, cfg))
+        if any(MARK.search(split_line(l)[1]) for l in alltxt.splitlines()) and not SINGLE_RE.search(" ".join(split_line(l)[0] for l in alltxt.splitlines())):
+            print("LIMITATION: results are reported but no section mentions that they come from a single seed; add it to Discussion/Limitations")
+            warns += 1
     print(f"--- {errs} error(s), {warns} warning(s); {len(drafts)} paragraph(s) still marked draft"
           + (f": {', '.join(drafts[:12])}" if drafts else ""))
     sys.exit(1 if errs else 0)
@@ -594,6 +626,7 @@ def cmd_add_doi(a):
             "venue": (msg.get("container-title") or [""])[0], "verified_via": "crossref", "abstract": abstract}
     p = new_card(root, a.key or make_key(authors, year, title), meta, bib)
     print(f"candidate card: {p.relative_to(root)}\n  {title} ({year}); {', '.join(authors[:3])}{' et al.' if len(authors) > 3 else ''}")
+    return p
 
 
 def cmd_add_arxiv(a):
@@ -619,6 +652,7 @@ def cmd_add_arxiv(a):
             "verified_via": "arxiv", "abstract": abstract}
     p = new_card(root, a.key or make_key(authors, year, title), meta, bib)
     print(f"candidate card: {p.relative_to(root)}\n  {title} ({year})")
+    return p
 
 
 def cmd_find(a):
@@ -637,13 +671,74 @@ def cmd_find(a):
               f"cites={p.get('citationCount')} oa={p.get('isOpenAccess')} {ident}\n   {ab}")
 
 
+DOI_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"<>{}|\\^`]+)", re.I)
+ARXIV_RE = re.compile(r"arXiv:\s*(\d{4}\.\d{4,5})(?:v\d+)?", re.I)
+
+
+def ids_from_pdf(pdf: Path) -> tuple[str | None, str | None, str]:
+    """Return (doi, arxiv_id, first_line) read from the first 3 pages of a PDF."""
+    try:
+        txt = subprocess.run(["pdftotext", "-l", "3", "-layout", str(pdf), "-"], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True).stdout
+    except FileNotFoundError:
+        sys.exit("pdftotext not installed (poppler-utils / `brew install poppler`)")
+    flat = re.sub(r"-\s*\n\s*", "", txt)
+    dois = [d.rstrip(".,;:)]'") for d in DOI_RE.findall(flat)]
+    doi = max(set(dois), key=dois.count) if dois else None   # the DOI repeated most is the paper's own
+    ax = ARXIV_RE.search(flat)
+    first = next((l.strip() for l in txt.splitlines() if len(l.strip()) > 15), "")
+    return doi, (ax.group(1) if ax else None), first
+
+
+def expand_pdfs(items: list[str]) -> list[Path]:
+    """PowerShell/cmd don't expand wildcards, so accept globs and folders here."""
+    import glob
+    out: list[Path] = []
+    for it in items:
+        pth = Path(it)
+        if pth.is_dir():
+            out += sorted(pth.glob("*.pdf"))
+        elif any(c in it for c in "*?["):
+            out += [Path(g) for g in sorted(glob.glob(it))]
+        else:
+            out.append(pth)
+    return out
+
+
+def cmd_add_pdf(a):
+    """For each PDF: read its DOI/arXiv id, verify metadata online, create the inbox card, ingest the text."""
+    root = find_root()
+    rc = 0
+    pdfs = expand_pdfs(a.pdfs)
+    if not pdfs:
+        sys.exit("no PDFs matched")
+    for pdf in pdfs:
+        print(f"== {pdf.name}")
+        doi, ax, first = ids_from_pdf(pdf)
+        if not doi and not ax:
+            print(f"   no DOI or arXiv id found in the first pages (starts: '{first[:80]}'). Ask a human for the DOI, then run add-doi.")
+            rc = 1
+            continue
+        try:
+            if doi:
+                p = cmd_add_doi(argparse.Namespace(doi=doi, key=a.key if len(pdfs) == 1 else None, expect_title=None))
+            else:
+                p = cmd_add_arxiv(argparse.Namespace(id=ax, key=a.key if len(pdfs) == 1 else None, expect_title=None))
+        except SystemExit as e:
+            print(f"   not added: {e}")
+            rc = 1
+            continue
+        cmd_ingest(argparse.Namespace(pdf=str(pdf), key=p.stem))
+    sys.exit(rc)
+
+
 def cmd_ingest(a):
     root = find_root()
     pdf = Path(a.pdf)
     if not pdf.exists():
         sys.exit(f"{pdf} not found")
     try:
-        raw = subprocess.run(["pdftotext", "-layout", str(pdf), "-"], capture_output=True, text=True, check=True).stdout
+        # reading order by default: -layout interleaves the columns of two-column papers and breaks quote matching
+        raw = subprocess.run(["pdftotext", *(["-layout"] if getattr(a, "layout", False) else []), str(pdf), "-"], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True).stdout
     except FileNotFoundError:
         sys.exit("pdftotext not installed (poppler-utils / `brew install poppler`)")
     pages = raw.split("\f")
@@ -791,7 +886,7 @@ def cmd_status(a):
     code = cfg["code_repo_path"]
     head = "?"
     try:
-        head = subprocess.run(["git", "-C", str(code), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip() or "?"
+        head = subprocess.run(["git", "-C", str(code), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip() or "?"
     except FileNotFoundError:
         pass
     last = (root / ".paper" / "code_head").read_text().strip() if (root / ".paper" / "code_head").exists() else None
@@ -799,7 +894,7 @@ def cmd_status(a):
     print(f"--- code repo {code.name} @ {head}; registry: {len(reg)} experiments "
           f"({', '.join(str(k) + '=' + str(v.get('status')) for k, v in list(reg.items())[:20])})")
     if last and last != head and head != "?":
-        diff = subprocess.run(["git", "-C", str(code), "diff", "--name-only", last, "HEAD"], capture_output=True, text=True).stdout.split()
+        diff = subprocess.run(["git", "-C", str(code), "diff", "--name-only", last, "HEAD"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split()
         touched = [p for p in diff if p.startswith(("results/", "experiments/", "configs/"))]
         print(f"--- code changed since last session ({last}..{head}); evidence-relevant files: {touched[:12] or 'none'}"
               "\n    re-run `check` so STALE numbers surface")
@@ -850,7 +945,9 @@ def main(argv=None):
     x = s.add_parser("find"); x.add_argument("query"); x.add_argument("-n", type=int, default=8); x.set_defaults(fn=cmd_find)
     x = s.add_parser("add-doi"); x.add_argument("doi"); x.add_argument("--key"); x.add_argument("--expect-title"); x.set_defaults(fn=cmd_add_doi)
     x = s.add_parser("add-arxiv"); x.add_argument("id"); x.add_argument("--key"); x.add_argument("--expect-title"); x.set_defaults(fn=cmd_add_arxiv)
-    x = s.add_parser("ingest"); x.add_argument("pdf"); x.add_argument("--key", required=True); x.set_defaults(fn=cmd_ingest)
+    x = s.add_parser("add-pdf"); x.add_argument("pdfs", nargs="+"); x.add_argument("--key"); x.set_defaults(fn=cmd_add_pdf)
+    x = s.add_parser("ingest"); x.add_argument("pdf"); x.add_argument("--key", required=True)
+    x.add_argument("--layout", action="store_true", help="keep physical layout (tables), at the cost of column order"); x.set_defaults(fn=cmd_ingest)
     x = s.add_parser("cards"); x.add_argument("--verify", action="store_true"); x.add_argument("--status"); x.set_defaults(fn=cmd_cards)
     x = s.add_parser("approve"); x.add_argument("key"); x.add_argument("--by"); x.set_defaults(fn=cmd_approve)
     x = s.add_parser("reject"); x.add_argument("key"); x.add_argument("--reason", required=True); x.set_defaults(fn=cmd_reject)

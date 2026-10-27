@@ -14,3 +14,4 @@ refs/text/*
 *.synctex.gz
 *.toc
 main.pdf
+__pycache__/

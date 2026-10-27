@@ -4,7 +4,8 @@ registry: experiments/registry.yaml   # experiment list with id + status
 evidence_roots: [results/runs, results/evidence]   # <root>/<EXP>/<RUN>/ run folders
 run_files: [results.json, results_display.json, evidence.json, manifest.json]
 sections_dir: sections
-noise_experiment: S                   # comparisons are flagged until this experiment is done
+noise_experiment: null                # set to an experiment id to flag comparisons until it is done
+single_seed: true                     # whole paper reports ONE seed: comparisons must say so; strong words flagged
 status_rules:                         # how each registry status may be written about
   planned: future work only; no results may be stated
   partial: say 'preliminary'/'initial'; no final claims

@@ -16,7 +16,8 @@
 - Who sets up the Zotero group library + Better BibTeX key format?
 
 ## Pending citation decisions (inbox)
-- none
+- 4 core cards have claims written and quotes verified, awaiting your approve/reject: gueck2024care, mcmahan2016communication, li2018federated, karimireddy2020scaffold.
+- Other candidates are triaged by title/abstract only (tier in the relevance field); no claims yet.
 
 ## Next
 - Outline session, then draft the Data section (E00-E03 and the leakage audit are all done)
