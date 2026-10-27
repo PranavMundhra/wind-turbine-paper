@@ -12,6 +12,7 @@ conversation never has to hold whole PDFs, notebooks or sections:
   find <query> [-n N]         Semantic Scholar search (only after the user agrees)
   add-doi <doi> [--key K]     verified metadata from Crossref -> refs/inbox/<key>.md
   add-arxiv <id> [--key K]    verified metadata from arXiv     -> refs/inbox/<key>.md
+  add-pdf <pdf...>            read DOI/arXiv id from each PDF, verify, make inbox card, ingest text
   ingest <pdf> --key K        pdf -> refs/text/<key>.txt with page markers
   cards [--verify]            list cards; --verify string-matches every quote
   approve <key> / reject <key> --reason R   (run only on the user's say-so)
@@ -594,6 +595,7 @@ def cmd_add_doi(a):
             "venue": (msg.get("container-title") or [""])[0], "verified_via": "crossref", "abstract": abstract}
     p = new_card(root, a.key or make_key(authors, year, title), meta, bib)
     print(f"candidate card: {p.relative_to(root)}\n  {title} ({year}); {', '.join(authors[:3])}{' et al.' if len(authors) > 3 else ''}")
+    return p
 
 
 def cmd_add_arxiv(a):
@@ -619,6 +621,7 @@ def cmd_add_arxiv(a):
             "verified_via": "arxiv", "abstract": abstract}
     p = new_card(root, a.key or make_key(authors, year, title), meta, bib)
     print(f"candidate card: {p.relative_to(root)}\n  {title} ({year})")
+    return p
 
 
 def cmd_find(a):
@@ -635,6 +638,49 @@ def cmd_find(a):
         ab = " ".join((p.get("abstract") or "").split())[:260]
         print(f"{i}. {p.get('title')} ({p.get('year')}), {auth} et al., {p.get('venue') or '?'}; "
               f"cites={p.get('citationCount')} oa={p.get('isOpenAccess')} {ident}\n   {ab}")
+
+
+DOI_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"<>{}|\\^`]+)", re.I)
+ARXIV_RE = re.compile(r"arXiv:\s*(\d{4}\.\d{4,5})(?:v\d+)?", re.I)
+
+
+def ids_from_pdf(pdf: Path) -> tuple[str | None, str | None, str]:
+    """Return (doi, arxiv_id, first_line) read from the first 3 pages of a PDF."""
+    try:
+        txt = subprocess.run(["pdftotext", "-l", "3", "-layout", str(pdf), "-"], capture_output=True, text=True, check=True).stdout
+    except FileNotFoundError:
+        sys.exit("pdftotext not installed (poppler-utils / `brew install poppler`)")
+    flat = re.sub(r"-\s*\n\s*", "", txt)
+    dois = [d.rstrip(".,;:)]'") for d in DOI_RE.findall(flat)]
+    doi = max(set(dois), key=dois.count) if dois else None   # the DOI repeated most is the paper's own
+    ax = ARXIV_RE.search(flat)
+    first = next((l.strip() for l in txt.splitlines() if len(l.strip()) > 15), "")
+    return doi, (ax.group(1) if ax else None), first
+
+
+def cmd_add_pdf(a):
+    """For each PDF: read its DOI/arXiv id, verify metadata online, create the inbox card, ingest the text."""
+    root = find_root()
+    rc = 0
+    for name in a.pdfs:
+        pdf = Path(name)
+        print(f"== {pdf.name}")
+        doi, ax, first = ids_from_pdf(pdf)
+        if not doi and not ax:
+            print(f"   no DOI or arXiv id found in the first pages (starts: '{first[:80]}'). Ask a human for the DOI, then run add-doi.")
+            rc = 1
+            continue
+        try:
+            if doi:
+                p = cmd_add_doi(argparse.Namespace(doi=doi, key=a.key if len(a.pdfs) == 1 else None, expect_title=None))
+            else:
+                p = cmd_add_arxiv(argparse.Namespace(id=ax, key=a.key if len(a.pdfs) == 1 else None, expect_title=None))
+        except SystemExit as e:
+            print(f"   not added: {e}")
+            rc = 1
+            continue
+        cmd_ingest(argparse.Namespace(pdf=str(pdf), key=p.stem))
+    sys.exit(rc)
 
 
 def cmd_ingest(a):
@@ -850,6 +896,7 @@ def main(argv=None):
     x = s.add_parser("find"); x.add_argument("query"); x.add_argument("-n", type=int, default=8); x.set_defaults(fn=cmd_find)
     x = s.add_parser("add-doi"); x.add_argument("doi"); x.add_argument("--key"); x.add_argument("--expect-title"); x.set_defaults(fn=cmd_add_doi)
     x = s.add_parser("add-arxiv"); x.add_argument("id"); x.add_argument("--key"); x.add_argument("--expect-title"); x.set_defaults(fn=cmd_add_arxiv)
+    x = s.add_parser("add-pdf"); x.add_argument("pdfs", nargs="+"); x.add_argument("--key"); x.set_defaults(fn=cmd_add_pdf)
     x = s.add_parser("ingest"); x.add_argument("pdf"); x.add_argument("--key", required=True); x.set_defaults(fn=cmd_ingest)
     x = s.add_parser("cards"); x.add_argument("--verify", action="store_true"); x.add_argument("--status"); x.set_defaults(fn=cmd_cards)
     x = s.add_parser("approve"); x.add_argument("key"); x.add_argument("--by"); x.set_defaults(fn=cmd_approve)
