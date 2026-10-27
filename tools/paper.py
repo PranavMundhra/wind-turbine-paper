@@ -737,7 +737,8 @@ def cmd_ingest(a):
     if not pdf.exists():
         sys.exit(f"{pdf} not found")
     try:
-        raw = subprocess.run(["pdftotext", "-layout", str(pdf), "-"], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True).stdout
+        # reading order by default: -layout interleaves the columns of two-column papers and breaks quote matching
+        raw = subprocess.run(["pdftotext", *(["-layout"] if getattr(a, "layout", False) else []), str(pdf), "-"], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True).stdout
     except FileNotFoundError:
         sys.exit("pdftotext not installed (poppler-utils / `brew install poppler`)")
     pages = raw.split("\f")
@@ -945,7 +946,8 @@ def main(argv=None):
     x = s.add_parser("add-doi"); x.add_argument("doi"); x.add_argument("--key"); x.add_argument("--expect-title"); x.set_defaults(fn=cmd_add_doi)
     x = s.add_parser("add-arxiv"); x.add_argument("id"); x.add_argument("--key"); x.add_argument("--expect-title"); x.set_defaults(fn=cmd_add_arxiv)
     x = s.add_parser("add-pdf"); x.add_argument("pdfs", nargs="+"); x.add_argument("--key"); x.set_defaults(fn=cmd_add_pdf)
-    x = s.add_parser("ingest"); x.add_argument("pdf"); x.add_argument("--key", required=True); x.set_defaults(fn=cmd_ingest)
+    x = s.add_parser("ingest"); x.add_argument("pdf"); x.add_argument("--key", required=True)
+    x.add_argument("--layout", action="store_true", help="keep physical layout (tables), at the cost of column order"); x.set_defaults(fn=cmd_ingest)
     x = s.add_parser("cards"); x.add_argument("--verify", action="store_true"); x.add_argument("--status"); x.set_defaults(fn=cmd_cards)
     x = s.add_parser("approve"); x.add_argument("key"); x.add_argument("--by"); x.set_defaults(fn=cmd_approve)
     x = s.add_parser("reject"); x.add_argument("key"); x.add_argument("--reason", required=True); x.set_defaults(fn=cmd_reject)
