@@ -78,6 +78,7 @@ def load_cfg(root: Path) -> dict:
     cfg.setdefault("run_files", ["results.json", "results_display.json", "evidence.json", "manifest.json"])
     cfg.setdefault("sections_dir", "sections")
     cfg.setdefault("noise_experiment", None)
+    cfg.setdefault("single_seed", False)
     cfg.setdefault("status_rules", {})
     return cfg
 
@@ -293,6 +294,8 @@ HEDGE = {"planned": re.compile(r"\b(will|plan\w*|future|intend\w*|propose\w*)\b"
          "partial": re.compile(r"\b(preliminary|initial|partial|early|so far|ongoing)\b", re.I),
          "done-unverified": re.compile(r"\b(reported|unverified|approximately|about|around|suggest\w*|indicat\w*)\b", re.I)}
 # Filler that marks text as machine-written. A trailing * means "any word starting with this stem".
+SINGLE_RE = re.compile(r"single[- ]seed|one seed|single run|one run|seed\s*\d+", re.I)
+STRONG = re.compile(r"\b(clearly|significant\w*|substantial\w*|robust\w*|consistent\w*|conclusive\w*|demonstrat\w*|prov(?:e|es|ed|en))\b", re.I)
 SLOP = ["delve*", "crucial", "pivotal", "notably", "it is important to note", "it is worth noting", "in the realm of",
         "plays a vital role", "plays a key role", "plays a crucial role", "a testament to", "navigat*", "landscape",
         "furthermore,", "moreover,", "in conclusion,", "underscore*", "seamless*", "leverag*", "robust", "novel",
@@ -456,6 +459,11 @@ def cmd_check(a):
                     emit("WARN", f, ln, st.upper(), f"{exp} is {st}; {rule_for(cfg, st)}")
             if exps and not noise_done and COMPARE.search(text) and (len(set(exps)) >= 2 or "than" in text):
                 emit("WARN", f, ln, "NOISE", f"comparison before {noise} (noise/seed robustness) is done; may be within run-to-run noise")
+            if cfg.get("single_seed") and exps and COMPARE.search(text):
+                if not SINGLE_RE.search(text):
+                    emit("WARN", f, ln, "SINGLE-SEED", "comparison must say it comes from one seed (e.g. 'in our single-seed run')")
+                if STRONG.search(text):
+                    emit("WARN", f, ln, "OVERCLAIM", f"'{STRONG.search(text).group(0)}' is too strong for a single-seed comparison")
             # --- numbers
             body = STRIP_CMDS.sub("", text)
             body = re.sub(r"\\(?:section|subsection|subsubsection|paragraph|caption)\*?\{[^}]*\}", "", body)
@@ -482,6 +490,11 @@ def cmd_check(a):
                 for p, rx in SLOP_RE:
                     if rx.search(body):
                         emit("WARN", f, ln, "SLOP", f"'{p.rstrip('*')}' in a Claude draft")
+    if cfg.get("single_seed") and not a.files:
+        alltxt = " ".join(p.read_text() for p in tex_files(root, cfg))
+        if any(MARK.search(split_line(l)[1]) for l in alltxt.splitlines()) and not SINGLE_RE.search(" ".join(split_line(l)[0] for l in alltxt.splitlines())):
+            print("LIMITATION: results are reported but no section mentions that they come from a single seed; add it to Discussion/Limitations")
+            warns += 1
     print(f"--- {errs} error(s), {warns} warning(s); {len(drafts)} paragraph(s) still marked draft"
           + (f": {', '.join(drafts[:12])}" if drafts else ""))
     sys.exit(1 if errs else 0)
