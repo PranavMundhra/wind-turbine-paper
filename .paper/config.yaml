@@ -1,0 +1,12 @@
+# paper.py configuration. Paths are relative to this paper repo.
+code_repo: ../wind-turbine              # override with env PAPER_CODE_REPO (CI does)
+registry: experiments/registry.yaml   # experiment list with id + status
+evidence_roots: [results/runs, results/evidence]   # <root>/<EXP>/<RUN>/ run folders
+run_files: [results.json, results_display.json, evidence.json, manifest.json]
+sections_dir: sections
+noise_experiment: S                   # comparisons are flagged until this experiment is done
+status_rules:                         # how each registry status may be written about
+  planned: future work only; no results may be stated
+  partial: say 'preliminary'/'initial'; no final claims
+  done-unverified: hedge or verify first; numbers exist only in prose
+  done: may be stated as a result

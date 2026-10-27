@@ -1,0 +1,16 @@
+refs/pdfs/*
+refs/text/*
+!refs/pdfs/.gitkeep
+!refs/text/.gitkeep
+.paper/index.db
+.paper/code_head
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+main.pdf

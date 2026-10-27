@@ -1,0 +1,6 @@
+{
+  "folders": [
+    { "name": "paper", "path": "." },
+    { "name": "code", "path": "../wind-turbine" }
+  ]
+}
