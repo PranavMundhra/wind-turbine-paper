@@ -88,10 +88,17 @@ FM = re.compile(r"^---\n(.*?)\n---\n?(.*)$", re.S)
 
 
 def read_card(path: Path) -> dict:
-    m = FM.match(path.read_text())
+    raw = path.read_bytes().decode("utf-8-sig", errors="replace").replace("\r\n", "\n")  # BOM + CRLF safe
+    m = FM.match(raw)
     if not m:
-        raise ValueError(f"{path}: missing YAML front matter")
-    d = yaml.safe_load(m.group(1)) or {}
+        raise ValueError("no YAML front matter: the file must start with a line '---' and have a closing '---'")
+    try:
+        d = yaml.safe_load(m.group(1)) or {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"YAML error: {str(e).splitlines()[0]} (line {getattr(getattr(e, 'problem_mark', None), 'line', -1) + 2}); "
+                         "tip: wrap any text containing a colon or quote in double quotes") from None
+    if not isinstance(d, dict):
+        raise ValueError("front matter is not a key: value block")
     d["_notes"] = m.group(2)
     d["_path"] = path
     return d
@@ -112,7 +119,7 @@ def all_cards(root: Path) -> dict[str, dict]:
             try:
                 c = read_card(p)
             except Exception as e:  # noqa: BLE001
-                print(f"WARN bad card {p}: {e}", file=sys.stderr)
+                print(f"BAD CARD {p.name}: {e}", file=sys.stderr)
                 continue
             out[c.get("key", p.stem)] = c
     return out
