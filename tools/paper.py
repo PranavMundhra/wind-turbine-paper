@@ -45,6 +45,17 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit("paper.py needs PyYAML: pip install pyyaml")
 
+
+# Windows defaults to cp1252; paper text and cards are UTF-8.
+_rt, _wt = Path.read_text, Path.write_text
+Path.read_text = lambda self, encoding="utf-8", errors=None: _rt(self, encoding=encoding, errors=errors)
+Path.write_text = lambda self, data, encoding="utf-8", errors=None, newline=None: _wt(self, data, encoding=encoding, errors=errors, newline=newline)
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
+
 HERE = Path(__file__).resolve().parent
 UA = "paper.py (grounded-paper skill; mailto:unknown)"
 
@@ -647,7 +658,7 @@ ARXIV_RE = re.compile(r"arXiv:\s*(\d{4}\.\d{4,5})(?:v\d+)?", re.I)
 def ids_from_pdf(pdf: Path) -> tuple[str | None, str | None, str]:
     """Return (doi, arxiv_id, first_line) read from the first 3 pages of a PDF."""
     try:
-        txt = subprocess.run(["pdftotext", "-l", "3", "-layout", str(pdf), "-"], capture_output=True, text=True, check=True).stdout
+        txt = subprocess.run(["pdftotext", "-l", "3", "-layout", str(pdf), "-"], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True).stdout
     except FileNotFoundError:
         sys.exit("pdftotext not installed (poppler-utils / `brew install poppler`)")
     flat = re.sub(r"-\s*\n\s*", "", txt)
@@ -658,12 +669,29 @@ def ids_from_pdf(pdf: Path) -> tuple[str | None, str | None, str]:
     return doi, (ax.group(1) if ax else None), first
 
 
+def expand_pdfs(items: list[str]) -> list[Path]:
+    """PowerShell/cmd don't expand wildcards, so accept globs and folders here."""
+    import glob
+    out: list[Path] = []
+    for it in items:
+        pth = Path(it)
+        if pth.is_dir():
+            out += sorted(pth.glob("*.pdf"))
+        elif any(c in it for c in "*?["):
+            out += [Path(g) for g in sorted(glob.glob(it))]
+        else:
+            out.append(pth)
+    return out
+
+
 def cmd_add_pdf(a):
     """For each PDF: read its DOI/arXiv id, verify metadata online, create the inbox card, ingest the text."""
     root = find_root()
     rc = 0
-    for name in a.pdfs:
-        pdf = Path(name)
+    pdfs = expand_pdfs(a.pdfs)
+    if not pdfs:
+        sys.exit("no PDFs matched")
+    for pdf in pdfs:
         print(f"== {pdf.name}")
         doi, ax, first = ids_from_pdf(pdf)
         if not doi and not ax:
@@ -672,9 +700,9 @@ def cmd_add_pdf(a):
             continue
         try:
             if doi:
-                p = cmd_add_doi(argparse.Namespace(doi=doi, key=a.key if len(a.pdfs) == 1 else None, expect_title=None))
+                p = cmd_add_doi(argparse.Namespace(doi=doi, key=a.key if len(pdfs) == 1 else None, expect_title=None))
             else:
-                p = cmd_add_arxiv(argparse.Namespace(id=ax, key=a.key if len(a.pdfs) == 1 else None, expect_title=None))
+                p = cmd_add_arxiv(argparse.Namespace(id=ax, key=a.key if len(pdfs) == 1 else None, expect_title=None))
         except SystemExit as e:
             print(f"   not added: {e}")
             rc = 1
@@ -689,7 +717,7 @@ def cmd_ingest(a):
     if not pdf.exists():
         sys.exit(f"{pdf} not found")
     try:
-        raw = subprocess.run(["pdftotext", "-layout", str(pdf), "-"], capture_output=True, text=True, check=True).stdout
+        raw = subprocess.run(["pdftotext", "-layout", str(pdf), "-"], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True).stdout
     except FileNotFoundError:
         sys.exit("pdftotext not installed (poppler-utils / `brew install poppler`)")
     pages = raw.split("\f")
@@ -837,7 +865,7 @@ def cmd_status(a):
     code = cfg["code_repo_path"]
     head = "?"
     try:
-        head = subprocess.run(["git", "-C", str(code), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip() or "?"
+        head = subprocess.run(["git", "-C", str(code), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip() or "?"
     except FileNotFoundError:
         pass
     last = (root / ".paper" / "code_head").read_text().strip() if (root / ".paper" / "code_head").exists() else None
@@ -845,7 +873,7 @@ def cmd_status(a):
     print(f"--- code repo {code.name} @ {head}; registry: {len(reg)} experiments "
           f"({', '.join(str(k) + '=' + str(v.get('status')) for k, v in list(reg.items())[:20])})")
     if last and last != head and head != "?":
-        diff = subprocess.run(["git", "-C", str(code), "diff", "--name-only", last, "HEAD"], capture_output=True, text=True).stdout.split()
+        diff = subprocess.run(["git", "-C", str(code), "diff", "--name-only", last, "HEAD"], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split()
         touched = [p for p in diff if p.startswith(("results/", "experiments/", "configs/"))]
         print(f"--- code changed since last session ({last}..{head}); evidence-relevant files: {touched[:12] or 'none'}"
               "\n    re-run `check` so STALE numbers surface")
